@@ -282,6 +282,8 @@ class ResNet(nn.Module):
 def ResNet18():
     return ResNet(BasicBlock, [2, 2, 2, 2])
 
+def ResNet34():
+    return ResNet(BasicBlock, [3, 4, 6, 3])
 
 def ResNet50():
     return ResNet(BottleneckBlock, [3, 4, 6, 3])
@@ -357,6 +359,14 @@ def eval(model, dataloader, optimizer, criterion, device):
 
     return total_loss / len(dataloader), total_acc / len(dataloader), simple_acc / len(dataloader), time.time() - start
 
+from torchvision.transforms.functional import rotate
+
+class RandomRotate90:
+    """画像を0, 90, 180, 270度のいずれかでランダムに回転させる"""
+    def __call__(self, img):
+        angles = [0, 90, 180, 270]
+        angle = random.choice(angles)  # ランダムに角度を選択
+        return rotate(img, angle)  # 選択された角度で回転
 
 def main():
     # deviceの設定
@@ -364,32 +374,40 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # dataloader / model
-    transform = transforms.Compose([
+    train_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        RandomRotate90(),
+        transforms.ToTensor()
+    ])
+    test_transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor()
     ])
-    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform)
-    test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform, answer=False)
+    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=train_transform)
+    test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=test_transform, answer=False)
     test_dataset.update_dict(train_dataset)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=4)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=2)
 
     model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
 
     # optimizer / criterion
-    num_epoch = 20
+    num_epoch = 10
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epoch, eta_min=0.0001)
 
     # train model
     for epoch in range(num_epoch):
         train_loss, train_acc, train_simple_acc, train_time = train(model, train_loader, optimizer, criterion, device)
-        print(f"【{epoch + 1}/{num_epoch}】\n"
-              f"train time: {train_time:.2f} [s]\n"
-              f"train loss: {train_loss:.4f}\n"
-              f"train acc: {train_acc:.4f}\n"
+        print(f"【{epoch + 1}/{num_epoch}】 | "
+              f"lr: {scheduler.get_last_lr()[0]:.6f} |"
+              f"train time: {train_time:.2f} [s] | "
+              f"train loss: {train_loss:.4f} | "
+              f"train acc: {train_acc:.4f} | "
               f"train simple acc: {train_simple_acc:.4f}")
+        scheduler.step()
 
     # 提出用ファイルの作成
     model.eval()
